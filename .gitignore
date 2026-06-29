@@ -1,0 +1,18 @@
+# Logs do Airflow (em runtime ficam no volume Docker "airflow-logs")
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Descrição da atividade (não faz parte do entregável)
+*.pdf
+
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

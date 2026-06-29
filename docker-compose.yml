@@ -1,0 +1,105 @@
+# =========================================================================== #
+#  ShopBrasil — Pipeline de Precificação (Apache Airflow + PostgreSQL)         #
+#                                                                             #
+#  Executor: LocalExecutor (scheduler executa as tasks no próprio processo).   #
+#  Serviços: postgres | airflow-init | airflow-webserver | airflow-scheduler   #
+# =========================================================================== #
+
+x-airflow-common: &airflow-common
+  build: .
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Sao_Paulo
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    # Connection do Airflow para o banco analítico (criada via env var).
+    AIRFLOW_CONN_POSTGRES_ANALYTICS: 'postgres://airflow:airflow@postgres:5432/ecommerce_analytics'
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./plugins:/opt/airflow/plugins
+    # Logs em VOLUME NOMEADO (e não bind-mount do host): evita problemas de
+    # permissão de escrita no Windows/Docker Desktop. Os logs continuam
+    # acessíveis pela UI e via `docker compose exec`.
+    - airflow-logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      - ./scripts/init-analytics-db.sql:/docker-entrypoint-initdb.d/01-init-analytics-db.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username airflow --password airflow \
+          --firstname Admin --lastname User --role Admin \
+          --email admin@shopbrasil.com || true
+        airflow pools set ecommerce_pool 2 "Limita a concorrencia das tasks mapeadas por categoria"
+        echo "==> Inicializacao concluida (db migrate + usuario + pool ecommerce_pool)."
+    # roda como o mesmo uid do Airflow (50000:0), herdado de x-airflow-common,
+    # para não criar diretórios de log pertencentes a root no volume compartilhado.
+    restart: on-failure
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:
+  airflow-logs:

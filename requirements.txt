@@ -1,0 +1,5 @@
+# Dependências extras instaladas sobre a imagem oficial do Airflow.
+# (instaladas no Dockerfile usando o arquivo de constraints da versão do Airflow,
+#  garantindo versões compatíveis).
+apache-airflow-providers-postgres
+requests
